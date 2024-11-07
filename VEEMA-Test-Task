@@ -1,0 +1,174 @@
+using System;
+using System.IO;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Threading;
+
+class FolderSynchronizer
+{
+    private readonly string sourceFolder;
+    private readonly string replicaFolder;
+    private readonly int syncInterval;
+    private readonly string logFilePath;
+    private readonly bool overwriteExistingFiles;
+
+    public FolderSynchronizer(string sourceFolder, string replicaFolder, int syncInterval, string logFilePath, bool overwriteExistingFiles)
+    {
+        this.sourceFolder = sourceFolder;
+        this.replicaFolder = replicaFolder;
+        this.syncInterval = syncInterval * 1000; // Convert to milliseconds
+        this.logFilePath = logFilePath;
+        this.overwriteExistingFiles = overwriteExistingFiles;
+    }
+
+    public void Start()
+    {
+        while (true)
+        {
+            SynchronizeFolders();
+            Thread.Sleep(syncInterval);
+        }
+    }
+
+    private void SynchronizeFolders()
+    {
+        try
+        {
+            // Ensure replica folder exists
+            if (!Directory.Exists(replicaFolder))
+            {
+                Directory.CreateDirectory(replicaFolder);
+                Log($"Created replica folder: {replicaFolder}");
+            }
+
+            // Synchronize files and directories
+            SyncDirectories(sourceFolder, replicaFolder);
+        }
+        catch (Exception ex)
+        {
+            Log($"Error during synchronization: {ex.Message}");
+        }
+    }
+
+    private void SyncDirectories(string sourceDir, string targetDir)
+    {
+        // Synchronize files
+        var sourceFiles = Directory.GetFiles(sourceDir);
+        var targetFiles = Directory.GetFiles(targetDir);
+        var targetFilesDict = targetFiles.ToDictionary(Path.GetFileName, path => path);
+
+        foreach (var sourceFile in sourceFiles)
+        {
+            var fileName = Path.GetFileName(sourceFile);
+            var targetFilePath = Path.Combine(targetDir, fileName);
+
+            if (!targetFilesDict.ContainsKey(fileName) || 
+                (overwriteExistingFiles && !FilesAreEqual(sourceFile, targetFilesDict[fileName])))
+            {
+                try
+                {
+                    File.Copy(sourceFile, targetFilePath, overwriteExistingFiles);
+                    Log($"Copied file: {sourceFile} -> {targetFilePath}");
+                }
+                catch (Exception ex)
+                {
+                    Log($"Error copying file: {sourceFile}. {ex.Message}");
+                }
+            }
+        }
+
+        // Remove files that are not in the source folder
+        foreach (var targetFile in targetFiles)
+        {
+            var fileName = Path.GetFileName(targetFile);
+            var sourceFilePath = Path.Combine(sourceDir, fileName);
+
+            if (!File.Exists(sourceFilePath))
+            {
+                try
+                {
+                    File.Delete(targetFile);
+                    Log($"Removed file from replica: {targetFile}");
+                }
+                catch (Exception ex)
+                {
+                    Log($"Error deleting file: {targetFile}. {ex.Message}");
+                }
+            }
+        }
+
+        // Synchronize subdirectories
+        var sourceDirectories = Directory.GetDirectories(sourceDir);
+        foreach (var sourceSubDir in sourceDirectories)
+        {
+            var subDirName = Path.GetFileName(sourceSubDir);
+            var targetSubDirPath = Path.Combine(targetDir, subDirName);
+
+            if (!Directory.Exists(targetSubDirPath))
+            {
+                try
+                {
+                    Directory.CreateDirectory(targetSubDirPath);
+                    Log($"Created subdirectory: {targetSubDirPath}");
+                }
+                catch (Exception ex)
+                {
+                    Log($"Error creating directory: {targetSubDirPath}. {ex.Message}");
+                }
+            }
+
+            SyncDirectories(sourceSubDir, targetSubDirPath);
+        }
+    }
+
+    private bool FilesAreEqual(string filePath1, string filePath2)
+    {
+        if (new FileInfo(filePath1).Length != new FileInfo(filePath2).Length)
+            return false;
+
+        using (var md5 = MD5.Create())
+        using (var stream1 = File.OpenRead(filePath1))
+        using (var stream2 = File.OpenRead(filePath2))
+        {
+            var hash1 = md5.ComputeHash(stream1);
+            var hash2 = md5.ComputeHash(stream2);
+            return hash1.SequenceEqual(hash2);
+        }
+    }
+
+    private void Log(string message)
+    {
+        var logMessage = $"{DateTime.Now}: {message}";
+        Console.WriteLine(logMessage);
+        try
+        {
+            File.AppendAllText(logFilePath, logMessage + Environment.NewLine);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to write to log file: {ex.Message}");
+        }
+    }
+
+    public static void Main(string[] args)
+    {
+        if (args.Length < 5)
+        {
+            Console.WriteLine("Usage: FolderSynchronizer <sourceFolder> <replicaFolder> <syncIntervalInSeconds> <logFilePath> <overwriteExistingFiles>");
+            return;
+        }
+
+        string sourceFolder = args[0];
+        string replicaFolder = args[1];
+        if (!int.TryParse(args[2], out int syncInterval) || syncInterval <= 0)
+        {
+            Console.WriteLine("Invalid sync interval. Please provide a valid positive integer.");
+            return;
+        }
+        string logFilePath = args[3];
+        bool overwriteExistingFiles = bool.Parse(args[4]);
+
+        var synchronizer = new FolderSynchronizer(sourceFolder, replicaFolder, syncInterval, logFilePath, overwriteExistingFiles);
+        synchronizer.Start();
+    }
+}
